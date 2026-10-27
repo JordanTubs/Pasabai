@@ -1,33 +1,35 @@
+import { House, Route, Settings, UsersRound, WalletCards } from "lucide-react";
+
 const NAV_ITEMS = [
-  { key: "home", label: "Home" },
-  { key: "passengers", label: "Passengers" },
-  { key: "history", label: "Rides" },
-  { key: "settings", label: "Settings" },
+  { key: "home", label: "Home", icon: House },
+  { key: "passengers", label: "Passengers", icon: UsersRound },
+  { key: "history", label: "Rides", icon: Route },
+  { key: "wallet", label: "Wallet", icon: WalletCards },
+  { key: "settings", label: "Settings", icon: Settings },
 ];
 
 export function BottomNav({ activeKey, onChange }) {
   return (
-    <div className="border-t border-primary/10 bg-white px-4 py-3">
-      <div className="grid grid-cols-4 gap-2">
+    <nav className="pasabai-dock-wrap" aria-label="Main navigation">
+      <div className="pasabai-dock">
         {NAV_ITEMS.map((item) => {
           const active = item.key === activeKey;
+          const Icon = item.icon;
 
           return (
             <button
               key={item.key}
               type="button"
               onClick={() => onChange(item.key)}
-              className={`rounded-lg px-2 py-3 text-xs font-semibold transition ${
-                active
-                  ? "bg-primary text-white shadow-md"
-                  : "text-muted hover:bg-appbg"
-              }`}
+              aria-current={active ? "page" : undefined}
+              className={`pasabai-dock-item ${active ? "is-active" : ""}`}
             >
-              {item.label}
+              <Icon aria-hidden="true" size={25} strokeWidth={active ? 2.5 : 2.15} />
+              <span>{item.label}</span>
             </button>
           );
         })}
       </div>
-    </div>
+    </nav>
   );
 }
