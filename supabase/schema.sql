@@ -1,88 +1,95 @@
--- Run this once in the Supabase SQL Editor before connecting the live app.
-create type public.user_role as enum ('driver', 'passenger');
-create type public.booking_status as enum ('requested', 'accepted', 'en_route', 'completed', 'cancelled');
+-- PasaBai initial Supabase schema. Run once on a new Supabase project.
+create extension if not exists pgcrypto;
+
+create type public.app_role as enum ('commuter', 'driver', 'admin');
+create type public.account_status as enum ('active', 'suspended', 'deactivated');
+create type public.verification_status as enum ('unverified', 'pending', 'verified', 'approved', 'rejected', 'suspended');
+create type public.offer_status as enum ('draft', 'published', 'cancelled', 'in_progress', 'completed', 'disputed');
+create type public.request_status as enum ('requested', 'accepted', 'rejected', 'cancelled');
+create type public.ride_status as enum ('confirmed', 'in_progress', 'completed', 'cancelled', 'disputed');
+create type public.payment_status as enum ('pending', 'simulated_paid', 'paid', 'refunded', 'failed', 'disputed');
+create type public.payment_method as enum ('cash', 'gcash', 'qrph', 'test');
+create type public.subscription_status as enum ('active', 'cancelled', 'expired', 'test_active');
+create type public.report_status as enum ('open', 'under_review', 'resolved', 'dismissed');
 
 create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
-  role public.user_role not null,
-  full_name text not null check (char_length(full_name) >= 2),
-  phone text,
-  vehicle_details text,
-  is_available boolean not null default false,
-  pickup_lat double precision,
-  pickup_lng double precision,
-  pickup_label text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  full_name text not null check (char_length(trim(full_name)) >= 2), email text, phone text, avatar_path text,
+  primary_role public.app_role not null default 'commuter', account_status public.account_status not null default 'active',
+  student_status public.verification_status not null default 'unverified', bio text check (char_length(bio) <= 500),
+  emergency_contact_name text, emergency_contact_phone text, created_at timestamptz not null default now(), updated_at timestamptz not null default now()
 );
-
-create table public.driver_locations (
-  driver_id uuid primary key references public.profiles(id) on delete cascade,
-  latitude double precision not null,
-  longitude double precision not null,
-  heading double precision,
-  updated_at timestamptz not null default now(),
-  sharing_until timestamptz not null
+create table public.user_roles (user_id uuid not null references public.profiles(id) on delete cascade, role public.app_role not null, created_at timestamptz not null default now(), primary key (user_id, role));
+create table public.student_verifications (
+  id uuid primary key default gen_random_uuid(), user_id uuid not null references public.profiles(id) on delete cascade,
+  school_name text not null, student_id_reference text not null, document_path text not null,
+  status public.verification_status not null default 'pending' check (status in ('pending', 'verified', 'rejected')),
+  reviewed_by uuid references public.profiles(id), reviewed_at timestamptz, created_at timestamptz not null default now()
 );
-
-create table public.bookings (
-  id uuid primary key default gen_random_uuid(),
-  passenger_id uuid not null references public.profiles(id) on delete cascade,
-  driver_id uuid not null references public.profiles(id) on delete restrict,
-  pickup_label text not null,
-  pickup_lat double precision,
-  pickup_lng double precision,
-  dropoff_label text not null,
-  scheduled_for timestamptz not null,
-  passenger_count integer not null default 1 check (passenger_count between 1 and 8),
-  status public.booking_status not null default 'requested',
-  driver_note text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+create table public.driver_verifications (
+  id uuid primary key default gen_random_uuid(), driver_id uuid not null references public.profiles(id) on delete cascade,
+  license_document_path text not null, status public.verification_status not null default 'pending' check (status in ('pending', 'approved', 'rejected', 'suspended')),
+  reviewed_by uuid references public.profiles(id), reviewed_at timestamptz, created_at timestamptz not null default now()
 );
+create table public.vehicles (
+  id uuid primary key default gen_random_uuid(), driver_id uuid not null references public.profiles(id) on delete cascade,
+  make text not null, model text not null, color text not null, plate_number text not null, seat_capacity integer not null check (seat_capacity between 1 and 12), document_path text,
+  verification_status public.verification_status not null default 'pending' check (verification_status in ('pending', 'approved', 'rejected', 'suspended')),
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique (driver_id, plate_number)
+);
+create table public.driver_plans (id uuid primary key default gen_random_uuid(), code text not null unique, name text not null, monthly_price numeric(12,2) not null check (monthly_price >= 0), commission_per_20 numeric(12,2) not null check (commission_per_20 >= 0), is_active boolean not null default true, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table public.subscriptions (id uuid primary key default gen_random_uuid(), driver_id uuid not null references public.profiles(id) on delete cascade, plan_id uuid not null references public.driver_plans(id), status public.subscription_status not null default 'test_active', started_at timestamptz not null default now(), expires_at timestamptz, provider_reference text, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table public.ride_offers (
+  id uuid primary key default gen_random_uuid(), driver_id uuid not null references public.profiles(id) on delete restrict, vehicle_id uuid not null references public.vehicles(id) on delete restrict,
+  origin_name text not null, origin_lat double precision, origin_lng double precision, destination_name text not null, destination_lat double precision, destination_lng double precision,
+  departure_time timestamptz not null, available_seats integer not null check (available_seats between 1 and 12), fare_per_passenger numeric(12,2) not null check (fare_per_passenger >= 0),
+  trip_type text not null default 'one_way' check (trip_type in ('one_way', 'round_trip')), notes text check (char_length(notes) <= 500), status public.offer_status not null default 'draft', created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create table public.ride_requests (
+  id uuid primary key default gen_random_uuid(), ride_offer_id uuid not null references public.ride_offers(id) on delete cascade, commuter_id uuid not null references public.profiles(id) on delete restrict,
+  pickup_name text not null, pickup_lat double precision, pickup_lng double precision, dropoff_name text not null, dropoff_lat double precision, dropoff_lng double precision,
+  seats_requested integer not null default 1 check (seats_requested between 1 and 8), proposed_amount numeric(12,2) not null check (proposed_amount >= 0), note text check (char_length(note) <= 500), status public.request_status not null default 'requested', created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique (ride_offer_id, commuter_id)
+);
+create table public.rides (id uuid primary key default gen_random_uuid(), ride_request_id uuid not null unique references public.ride_requests(id) on delete restrict, ride_offer_id uuid not null references public.ride_offers(id) on delete restrict, driver_id uuid not null references public.profiles(id) on delete restrict, commuter_id uuid not null references public.profiles(id) on delete restrict, agreed_amount numeric(12,2) not null check (agreed_amount >= 0), status public.ride_status not null default 'confirmed', started_at timestamptz, completed_at timestamptz, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table public.payments (id uuid primary key default gen_random_uuid(), ride_id uuid not null references public.rides(id) on delete restrict, payer_id uuid not null references public.profiles(id) on delete restrict, payee_id uuid not null references public.profiles(id) on delete restrict, amount numeric(12,2) not null check (amount >= 0), payment_method public.payment_method not null, status public.payment_status not null default 'pending', provider_reference text, paid_at timestamptz, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table public.payment_events (id uuid primary key default gen_random_uuid(), payment_id uuid not null references public.payments(id) on delete cascade, event_type text not null, provider_reference text, payload jsonb not null default '{}'::jsonb, created_at timestamptz not null default now());
+create table public.platform_fees (id uuid primary key default gen_random_uuid(), ride_id uuid not null unique references public.rides(id) on delete cascade, driver_id uuid not null references public.profiles(id) on delete restrict, plan_id uuid references public.driver_plans(id), gross_amount numeric(12,2) not null check (gross_amount >= 0), commission_amount numeric(12,2) not null check (commission_amount >= 0), driver_net_amount numeric(12,2) not null check (driver_net_amount >= 0), settlement_status text not null default 'pending' check (settlement_status in ('pending', 'settled', 'waived')), created_at timestamptz not null default now());
+create table public.ratings (id uuid primary key default gen_random_uuid(), ride_id uuid not null references public.rides(id) on delete cascade, reviewer_id uuid not null references public.profiles(id) on delete cascade, reviewee_id uuid not null references public.profiles(id) on delete cascade, stars integer not null check (stars between 1 and 5), comment text check (char_length(comment) <= 1000), created_at timestamptz not null default now(), unique (ride_id, reviewer_id), check (reviewer_id <> reviewee_id));
+create table public.achievements (id uuid primary key default gen_random_uuid(), code text not null unique, name text not null, description text not null, required_rides integer not null check (required_rides > 0), icon_name text not null, is_active boolean not null default true, created_at timestamptz not null default now());
+create table public.user_achievements (user_id uuid not null references public.profiles(id) on delete cascade, achievement_id uuid not null references public.achievements(id) on delete cascade, earned_at timestamptz not null default now(), primary key (user_id, achievement_id));
+create table public.monthly_milestones (user_id uuid not null references public.profiles(id) on delete cascade, month_start date not null check (month_start = date_trunc('month', month_start)::date), completed_rides integer not null default 0 check (completed_rides >= 0), current_streak integer not null default 0 check (current_streak >= 0), longest_streak integer not null default 0 check (longest_streak >= 0), updated_at timestamptz not null default now(), primary key (user_id, month_start));
+create table public.notifications (id uuid primary key default gen_random_uuid(), user_id uuid not null references public.profiles(id) on delete cascade, title text not null, message text not null, type text not null, related_entity_id uuid, is_read boolean not null default false, created_at timestamptz not null default now());
+create table public.reports (id uuid primary key default gen_random_uuid(), reporter_id uuid not null references public.profiles(id) on delete restrict, reported_user_id uuid references public.profiles(id) on delete restrict, ride_id uuid references public.rides(id) on delete restrict, reason text not null, description text check (char_length(description) <= 2000), status public.report_status not null default 'open', reviewed_by uuid references public.profiles(id), reviewed_at timestamptz, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table public.admin_actions (id uuid primary key default gen_random_uuid(), admin_id uuid not null references public.profiles(id) on delete restrict, action_type text not null, target_type text not null, target_id uuid not null, details jsonb not null default '{}'::jsonb, created_at timestamptz not null default now());
 
-create index bookings_driver_schedule_idx on public.bookings(driver_id, scheduled_for);
-create index bookings_passenger_schedule_idx on public.bookings(passenger_id, scheduled_for);
-create index driver_locations_sharing_idx on public.driver_locations(sharing_until);
+create index ride_offers_search_idx on public.ride_offers(status, departure_time); create index ride_requests_offer_status_idx on public.ride_requests(ride_offer_id, status); create index rides_participants_idx on public.rides(driver_id, commuter_id, status); create index notifications_user_unread_idx on public.notifications(user_id, is_read, created_at desc); create index reports_status_idx on public.reports(status, created_at desc);
+create or replace function public.is_admin() returns boolean language sql stable security definer set search_path = public as $$ select exists (select 1 from public.user_roles where user_id = auth.uid() and role = 'admin'); $$;
+create or replace function public.set_updated_at() returns trigger language plpgsql as $$ begin new.updated_at = now(); return new; end; $$;
+create trigger profiles_updated before update on public.profiles for each row execute procedure public.set_updated_at(); create trigger vehicles_updated before update on public.vehicles for each row execute procedure public.set_updated_at(); create trigger offers_updated before update on public.ride_offers for each row execute procedure public.set_updated_at(); create trigger requests_updated before update on public.ride_requests for each row execute procedure public.set_updated_at(); create trigger rides_updated before update on public.rides for each row execute procedure public.set_updated_at(); create trigger payments_updated before update on public.payments for each row execute procedure public.set_updated_at();
 
-alter table public.profiles enable row level security;
-alter table public.driver_locations enable row level security;
-alter table public.bookings enable row level security;
+-- Transactional seat reservation; call only from an authenticated driver session.
+create or replace function public.accept_ride_request(request_id uuid) returns uuid language plpgsql security definer set search_path = public as $$
+declare request_row public.ride_requests; offer_row public.ride_offers; ride_id uuid;
+begin
+  select * into request_row from public.ride_requests where id = request_id for update;
+  if request_row.id is null or request_row.status <> 'requested' then raise exception 'Request is not available'; end if;
+  select * into offer_row from public.ride_offers where id = request_row.ride_offer_id for update;
+  if offer_row.driver_id <> auth.uid() or offer_row.status <> 'published' then raise exception 'Not authorized'; end if;
+  if offer_row.available_seats < request_row.seats_requested then raise exception 'Not enough seats'; end if;
+  update public.ride_offers set available_seats = available_seats - request_row.seats_requested where id = offer_row.id;
+  update public.ride_requests set status = 'accepted' where id = request_row.id;
+  insert into public.rides (ride_request_id, ride_offer_id, driver_id, commuter_id, agreed_amount) values (request_row.id, offer_row.id, offer_row.driver_id, request_row.commuter_id, request_row.proposed_amount) returning id into ride_id;
+  return ride_id;
+end; $$;
 
-revoke all on public.profiles, public.driver_locations, public.bookings from anon;
-grant select, insert, update on public.profiles to authenticated;
-grant select, insert, update on public.driver_locations to authenticated;
-grant select, insert, update on public.bookings to authenticated;
+alter table public.profiles enable row level security; alter table public.user_roles enable row level security; alter table public.student_verifications enable row level security; alter table public.driver_verifications enable row level security; alter table public.vehicles enable row level security; alter table public.driver_plans enable row level security; alter table public.subscriptions enable row level security; alter table public.ride_offers enable row level security; alter table public.ride_requests enable row level security; alter table public.rides enable row level security; alter table public.payments enable row level security; alter table public.payment_events enable row level security; alter table public.platform_fees enable row level security; alter table public.ratings enable row level security; alter table public.achievements enable row level security; alter table public.user_achievements enable row level security; alter table public.monthly_milestones enable row level security; alter table public.notifications enable row level security; alter table public.reports enable row level security; alter table public.admin_actions enable row level security;
+create policy "profiles: read active" on public.profiles for select to authenticated using (id = auth.uid() or account_status = 'active'); create policy "profiles: create self" on public.profiles for insert to authenticated with check (id = auth.uid()); create policy "profiles: update self" on public.profiles for update to authenticated using (id = auth.uid()) with check (id = auth.uid());
+create policy "roles: self read" on public.user_roles for select to authenticated using (user_id = auth.uid() or public.is_admin());
+create policy "student verification: owner read" on public.student_verifications for select to authenticated using (user_id = auth.uid() or public.is_admin()); create policy "student verification: owner create" on public.student_verifications for insert to authenticated with check (user_id = auth.uid());
+create policy "driver verification: owner read" on public.driver_verifications for select to authenticated using (driver_id = auth.uid() or public.is_admin()); create policy "driver verification: owner create" on public.driver_verifications for insert to authenticated with check (driver_id = auth.uid());
+create policy "vehicles: owner manage" on public.vehicles for all to authenticated using (driver_id = auth.uid() or public.is_admin()) with check (driver_id = auth.uid() or public.is_admin()); create policy "plans: read" on public.driver_plans for select to authenticated using (true); create policy "subscriptions: owner read" on public.subscriptions for select to authenticated using (driver_id = auth.uid() or public.is_admin());
+create policy "offers: read published" on public.ride_offers for select to authenticated using (status = 'published' or driver_id = auth.uid() or public.is_admin()); create policy "offers: driver create" on public.ride_offers for insert to authenticated with check (driver_id = auth.uid()); create policy "offers: driver update" on public.ride_offers for update to authenticated using (driver_id = auth.uid() or public.is_admin()) with check (driver_id = auth.uid() or public.is_admin());
+create policy "requests: participants read" on public.ride_requests for select to authenticated using (commuter_id = auth.uid() or exists (select 1 from public.ride_offers o where o.id = ride_offer_id and o.driver_id = auth.uid()) or public.is_admin()); create policy "requests: commuter create" on public.ride_requests for insert to authenticated with check (commuter_id = auth.uid()); create policy "requests: commuter cancel" on public.ride_requests for update to authenticated using (commuter_id = auth.uid() and status = 'requested') with check (commuter_id = auth.uid());
+create policy "rides: participants read" on public.rides for select to authenticated using (driver_id = auth.uid() or commuter_id = auth.uid() or public.is_admin()); create policy "ratings: participants read" on public.ratings for select to authenticated using (reviewer_id = auth.uid() or reviewee_id = auth.uid() or public.is_admin()); create policy "ratings: own insert" on public.ratings for insert to authenticated with check (reviewer_id = auth.uid()); create policy "notifications: owner manage" on public.notifications for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid()); create policy "reports: reporter read" on public.reports for select to authenticated using (reporter_id = auth.uid() or public.is_admin()); create policy "reports: reporter create" on public.reports for insert to authenticated with check (reporter_id = auth.uid()); create policy "milestones: owner read" on public.monthly_milestones for select to authenticated using (user_id = auth.uid() or public.is_admin()); create policy "achievement catalogue read" on public.achievements for select to authenticated using (is_active = true or public.is_admin()); create policy "earned achievements read" on public.user_achievements for select to authenticated using (user_id = auth.uid() or public.is_admin()); create policy "admin audit read" on public.admin_actions for select to authenticated using (public.is_admin());
 
-create policy "Users can view signed-in profiles" on public.profiles
-  for select to authenticated using (true);
-create policy "Users can create their own profile" on public.profiles
-  for insert to authenticated with check ((select auth.uid()) = id);
-create policy "Users can update their own profile" on public.profiles
-  for update to authenticated using ((select auth.uid()) = id) with check ((select auth.uid()) = id);
-
-create policy "Drivers manage their own location" on public.driver_locations
-  for insert to authenticated with check ((select auth.uid()) = driver_id);
-create policy "Drivers update their own location" on public.driver_locations
-  for update to authenticated using ((select auth.uid()) = driver_id) with check ((select auth.uid()) = driver_id);
-create policy "Relevant riders can view driver locations" on public.driver_locations
-  for select to authenticated using (
-    (select auth.uid()) = driver_id
-    or exists (
-      select 1 from public.bookings
-      where bookings.driver_id = driver_locations.driver_id
-        and bookings.passenger_id = (select auth.uid())
-        and bookings.status in ('accepted', 'en_route')
-    )
-  );
-
-create policy "Passengers create their own bookings" on public.bookings
-  for insert to authenticated with check ((select auth.uid()) = passenger_id);
-create policy "Passengers and drivers view their bookings" on public.bookings
-  for select to authenticated using ((select auth.uid()) = passenger_id or (select auth.uid()) = driver_id);
-create policy "Drivers update assigned bookings" on public.bookings
-  for update to authenticated using ((select auth.uid()) = driver_id) with check ((select auth.uid()) = driver_id);
-create policy "Passengers cancel their requested bookings" on public.bookings
-  for update to authenticated using ((select auth.uid()) = passenger_id and status = 'requested') with check ((select auth.uid()) = passenger_id);
-
-alter publication supabase_realtime add table public.driver_locations, public.bookings;
+-- Create private Storage buckets in the Supabase dashboard: verification-documents and profile-avatars.
